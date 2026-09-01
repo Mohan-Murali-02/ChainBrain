@@ -1,0 +1,49 @@
+<svg width="64" height="64" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+
+  <defs>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="2.5" result="coloredBlur"></feGaussianBlur>
+      <feMerge>
+        <feMergeNode in="coloredBlur"></feMergeNode>
+        <feMergeNode in="SourceGraphic"></feMergeNode>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <g stroke="#60A5FA" stroke-width="2.2" stroke-linecap="round" filter="url(#glow)" fill="none">
+
+    <line x1="18" y1="18" x2="32" y2="12"></line>
+    <line x1="32" y1="12" x2="46" y2="18"></line>
+
+    <line x1="18" y1="18" x2="14" y2="32"></line>
+    <line x1="46" y1="18" x2="50" y2="32"></line>
+
+    <line x1="14" y1="32" x2="18" y2="46"></line>
+    <line x1="50" y1="32" x2="46" y2="46"></line>
+
+    <line x1="18" y1="46" x2="32" y2="52"></line>
+    <line x1="32" y1="52" x2="46" y2="46"></line>
+
+    <line x1="18" y1="18" x2="46" y2="18"></line>
+    <line x1="18" y1="46" x2="46" y2="46"></line>
+
+    <line x1="32" y1="12" x2="32" y2="52"></line>
+
+  </g>
+
+  <g fill="#60A5FA">
+
+    <circle cx="18" cy="18" r="3"></circle>
+    <circle cx="32" cy="12" r="3"></circle>
+    <circle cx="46" cy="18" r="3"></circle>
+
+    <circle cx="14" cy="32" r="3"></circle>
+    <circle cx="50" cy="32" r="3"></circle>
+
+    <circle cx="18" cy="46" r="3"></circle>
+    <circle cx="32" cy="52" r="3"></circle>
+    <circle cx="46" cy="46" r="3"></circle>
+
+  </g>
+
+</svg>
