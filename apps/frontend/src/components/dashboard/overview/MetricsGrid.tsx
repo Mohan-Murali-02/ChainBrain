@@ -35,7 +35,7 @@ const MetricsGrid = () => {
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
       <MetricCard
         title="Security Score"
-        value={summary.securityScore ?? 100 - (summary.riskScore || 0)}
+        value={summary.securityScore ?? 0}
         suffix="/100"
         valueClassName={
           (summary.securityScore ?? 100) >= 80

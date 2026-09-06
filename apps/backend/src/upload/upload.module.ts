@@ -7,6 +7,7 @@ import { ScannerModule } from '../scanner/scanner.module';
 import { AiModule } from '../ai/ai.module';
 import { RecommendationModule } from '../recommendation/recommendation.module';
 import { RiskModule } from '../risk/risk.module';
+import { DependencyModule } from '../dependency/dependency.module';
 
 @Module({
   imports: [
@@ -15,6 +16,7 @@ import { RiskModule } from '../risk/risk.module';
     RiskModule,
     RecommendationModule,
     AiModule,
+    DependencyModule,
   ],
   controllers: [UploadController],
   providers: [UploadService],

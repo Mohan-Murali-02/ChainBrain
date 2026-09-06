@@ -8,9 +8,10 @@ import { PrismaModule } from './prisma/prisma.module';
 import { AiModule } from './ai/ai.module';
 import { RiskModule } from './risk/risk.module';
 import { RecommendationModule } from './recommendation/recommendation.module';
+import { DependencyModule } from './dependency/dependency.module';
 
 @Module({
-  imports: [UploadModule, ParserModule, ScannerModule, PrismaModule, AiModule, RiskModule, RecommendationModule],
+  imports: [UploadModule, ParserModule, ScannerModule, PrismaModule, AiModule, RiskModule, RecommendationModule, DependencyModule],
   controllers: [AppController],
   providers: [AppService],
 })

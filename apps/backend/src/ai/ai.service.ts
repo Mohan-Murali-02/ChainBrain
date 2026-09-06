@@ -1,6 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
 import axios from 'axios';
-
 import { ScanSummary } from '../common/interfaces/ScanSummary';
 import { ScanResult } from '../common/interfaces/ScanResult';
 import { Recommendation } from '../common/interfaces/Recommendation';
@@ -10,9 +9,11 @@ import { ChatRequestDto } from './ai.controller';
 @Injectable()
 export class AiService {
   private readonly logger = new Logger(AiService.name);
-  private readonly ollamaUrl = process.env.OLLAMA_URL || 'http://localhost:11434';
-  private readonly defaultModel = process.env.AI_MODEL || 'llama3.2:3b';
+  private readonly omniRouteUrl =
+  process.env.OMNIROUTE_URL || 'http://localhost:20128/v1';
 
+private readonly aiModel =
+  process.env.AI_MODEL || 'chainbrain-ai';
   async generateReport(data: {
     summary: ScanSummary;
     results: ScanResult[];
@@ -108,20 +109,38 @@ Return EXACTLY this schema:
 
     try {
       const response = await axios.post(
-        `${this.ollamaUrl}/api/generate`,
-        {
-          model: this.defaultModel,
-          prompt,
-          stream: false,
-          format: 'json',
+      `${this.omniRouteUrl}/chat/completions`,
+      {
+        model: this.aiModel,
+        messages: [
+          {
+            role: 'user',
+            content: prompt,
+          },
+        ],
+        response_format: {
+          type: 'json_object',
         },
-        { timeout: 12000 },
+      },
+    );
+
+    const text = response.data?.choices?.[0]?.message?.content;
+
+    if (!text) {
+      throw new Error('OmniRoute returned an empty response');
+    }
+
+    return JSON.parse(text) as AiReport;
+    } catch (err) {
+      this.logger.warn(
+        `OmniRoute report generation failed or unavailable: ${err.message}. Using fallback engine.`,
       );
 
-      return JSON.parse(response.data.response) as AiReport;
-    } catch (err) {
-      this.logger.warn(`Ollama report generation failed or unavailable: ${err.message}. Using fallback engine.`);
-      return this.generateFallbackReport(summary, results, recommendations);
+      return this.generateFallbackReport(
+        summary,
+        results,
+        recommendations,
+      );
     }
   }
 
@@ -169,20 +188,29 @@ ${(recommendations || []).slice(0, 5).map((rec) => `- Upgrade ${rec.package} (${
 
     try {
       const response = await axios.post(
-        `${this.ollamaUrl}/api/generate`,
-        {
-          model: this.defaultModel,
-          prompt: conversationPrompt,
-          stream: false,
-        },
-        { timeout: 12000 },
-      );
+      `${this.omniRouteUrl}/chat/completions`,
+      {
+        model: this.aiModel,
+        messages: [
+          {
+            role: 'user',
+            content: conversationPrompt,
+          },
+        ],
+      },
+    );
 
-      if (response.data && response.data.response) {
-        return response.data.response.trim();
-      }
+    const text = response.data?.choices?.[0]?.message?.content;
+
+    if (text) {
+      return text.trim();
+    }
+
+    throw new Error('OmniRoute returned an empty response');
     } catch (err) {
-      this.logger.warn(`Ollama chat failed or unavailable: ${err.message}. Using heuristic fallback.`);
+      this.logger.warn(
+        `OmniRoute chat failed or unavailable: ${err.message}. Using heuristic fallback.`,
+      );
     }
 
     // Heuristic Fallback security engine
@@ -209,7 +237,7 @@ ${(recommendations || []).slice(0, 5).map((rec) => `- Upgrade ${rec.package} (${
     if (lower.includes('deploy') || lower.includes('safe') || lower.includes('production') || lower.includes('release')) {
       const isBlock = summary?.riskLevel === 'CRITICAL' || summary?.riskLevel === 'HIGH';
       const status = isBlock ? '🚨 **Deployment Block Recommended**' : summary?.riskLevel === 'MEDIUM' ? '⚠️ **Caution Recommended**' : '✅ **Safe to Deploy**';
-      
+
       return `${status}
 
 **Project Security Posture:**
@@ -326,17 +354,17 @@ Verify breaking changes in the package release notes before deploying.`;
       keyFindings: [
         `Identified ${summary.vulnerablePackages} vulnerable package(s) containing ${summary.totalVulnerabilities} total known vulnerabilities.`,
         `Severity distribution: ${criticalCount} Critical, ${highCount} High, ${summary.severityCounts?.medium ?? 0} Medium, ${summary.severityCounts?.low ?? 0} Low advisories.`,
-        vulnerable.length > 0 
+        vulnerable.length > 0
           ? `Highest risk exposure stems from ${vulnerable.slice(0, 2).map(v => v.package).join(' and ')}.`
           : `All scanned packages currently meet baseline vulnerability hygiene standards.`,
       ],
       recommendations: recommendations.length > 0
         ? recommendations.slice(0, 3).map(r => `Upgrade ${r.package}@${r.version} to patched version (${r.fix})`)
         : [
-            'Maintain continuous dependency scanning during CI/CD builds.',
-            'Keep lockfiles pinned and automated dependency updates enabled.',
-            'Regularly audit newly added third-party packages.',
-          ],
+          'Maintain continuous dependency scanning during CI/CD builds.',
+          'Keep lockfiles pinned and automated dependency updates enabled.',
+          'Regularly audit newly added third-party packages.',
+        ],
       priorityPackages: recommendations.slice(0, 5).map(r => ({
         package: r.package,
         severity: r.severity,

@@ -3,84 +3,119 @@ import axios from 'axios';
 
 import { ScanResult } from '../common/interfaces/ScanResult';
 
+interface ScanTarget {
+  package: string;
+  version: string;
+}
+
 @Injectable()
 export class ScannerService {
-  async scan(projects: any[]): Promise<ScanResult[]> {
-    const scannedPackages = new Set<string>();
+  async scanPackages(
+    packages: ScanTarget[],
+  ): Promise<ScanResult[]> {
+    /*
+     * De-duplicate by package + version.
+     *
+     * Different versions of the same package can have
+     * different vulnerability sets.
+     */
+    const uniquePackages = new Map<
+      string,
+      ScanTarget
+    >();
 
-    const packages: {
-      package: string;
-      version: string;
-    }[] = [];
+    for (const pkg of packages) {
+      const key =
+        `${pkg.package}@${pkg.version}`;
 
-    for (const project of projects) {
-      const dependencies = {
-        ...(project.dependencies || {}),
-        ...(project.devDependencies || {}),
-      };
-
-      for (const [name, version] of Object.entries(dependencies)) {
-        if (scannedPackages.has(name)) continue;
-
-        scannedPackages.add(name);
-
-        packages.push({
-          package: name,
-          version: (version as string).replace(/^[~^]/, ''),
-        });
+      if (!uniquePackages.has(key)) {
+        uniquePackages.set(key, pkg);
       }
     }
 
-    /*
-      Limit to 10 simultaneous requests
-    */
-    const limit = 10;
-    return this.executeWithConcurrencyLimit(packages, limit, async (pkg) => {
-      try {
-        const response = await axios.post(
-          'https://api.osv.dev/v1/query',
-          {
-            package: {
-              ecosystem: 'npm',
-              name: pkg.package,
-            },
-            version: pkg.version,
-          },
-        );
+    const targets =
+      Array.from(uniquePackages.values());
 
-        return {
-          package: pkg.package,
-          version: pkg.version,
-          vulnerabilities: response.data.vulns ?? [],
-        };
-      } catch {
-        return {
-          package: pkg.package,
-          version: pkg.version,
-          vulnerabilities: [],
-          error: 'Failed to scan',
-        };
-      }
-    });
+    /*
+     * Limit concurrent OSV requests.
+     */
+    const limit = 10;
+
+    return this.executeWithConcurrencyLimit(
+      targets,
+      limit,
+      async (pkg) => {
+        try {
+          const response = await axios.post(
+            'https://api.osv.dev/v1/query',
+            {
+              package: {
+                ecosystem: 'npm',
+                name: pkg.package,
+              },
+              version: pkg.version,
+            },
+          );
+
+          return {
+            package: pkg.package,
+            version: pkg.version,
+            vulnerabilities:
+              response.data.vulns ?? [],
+          };
+        } catch {
+          return {
+            package: pkg.package,
+            version: pkg.version,
+            vulnerabilities: [],
+            error: 'Failed to scan',
+          };
+        }
+      },
+    );
   }
 
-  private async executeWithConcurrencyLimit<T, R>(
+  private async executeWithConcurrencyLimit<
+    T,
+    R
+  >(
     items: T[],
     limit: number,
     fn: (item: T) => Promise<R>,
   ): Promise<R[]> {
-    const results: R[] = new Array(items.length);
+    const results: R[] =
+      new Array(items.length);
+
     let index = 0;
+
     const workers = Array.from(
-      { length: Math.min(limit, items.length) },
+      {
+        length: Math.min(
+          limit,
+          items.length,
+        ),
+      },
       async () => {
-        while (index < items.length) {
-          const current = index++;
-          results[current] = await fn(items[current]);
+        while (true) {
+          const currentIndex = index++;
+
+          if (
+            currentIndex >=
+            items.length
+          ) {
+            break;
+          }
+
+          results[currentIndex] =
+            await fn(
+              items[currentIndex],
+            );
         }
       },
     );
+
     await Promise.all(workers);
+
     return results;
   }
 }
