@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import axios from 'axios';
+
 import { ScanSummary } from '../common/interfaces/ScanSummary';
 import { ScanResult } from '../common/interfaces/ScanResult';
 import { Recommendation } from '../common/interfaces/Recommendation';
@@ -9,11 +10,35 @@ import { ChatRequestDto } from './ai.controller';
 @Injectable()
 export class AiService {
   private readonly logger = new Logger(AiService.name);
-  private readonly omniRouteUrl =
-  process.env.OMNIROUTE_URL || 'http://localhost:20128/v1';
 
-private readonly aiModel =
-  process.env.AI_MODEL || 'chainbrain-ai';
+  private readonly omniRouteUrl =
+    process.env.OMNIROUTE_URL || 'http://127.0.0.1:20128/v1';
+
+  private readonly aiModel =
+    process.env.AI_MODEL || 'chainbrain-ai';
+
+  /**
+   * Authentication/configuration used for all OmniRoute API requests.
+   *
+   * The API key is read from the backend environment and is never exposed
+   * in logs or returned to the frontend.
+   */
+  private getOmniRouteConfig() {
+    const apiKey = process.env.OMNIROUTE_API_KEY;
+
+    if (!apiKey) {
+      throw new Error('OMNIROUTE_API_KEY is not configured');
+    }
+
+    return {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      timeout: 60000,
+    };
+  }
+
   async generateReport(data: {
     summary: ScanSummary;
     results: ScanResult[];
@@ -22,13 +47,18 @@ private readonly aiModel =
     const { summary, results, recommendations } = data;
 
     const vulnerablePackages = results
-      .filter((pkg) => pkg.vulnerabilities && pkg.vulnerabilities.length > 0)
+      .filter(
+        (pkg) => pkg.vulnerabilities && pkg.vulnerabilities.length > 0,
+      )
       .map((pkg) => ({
         package: pkg.package,
         version: pkg.version,
         vulnerabilityCount: pkg.vulnerabilities.length,
         severities: pkg.vulnerabilities.map(
-          (v) => v.database_specific?.severity ?? 'UNKNOWN',
+          (v) =>
+            v.database_specific?.severity ??
+            v.ecosystem_specific?.severity ??
+            'UNKNOWN',
         ),
       }));
 
@@ -89,8 +119,12 @@ Keep the language suitable for a professional engineering dashboard.
 RETURN FORMAT
 =========================================================
 Return ONLY valid JSON.
-No markdown. No explanations. No code fences.
+No markdown.
+No explanations.
+No code fences.
+
 Return EXACTLY this schema:
+
 {
   "overallAssessment": "...",
   "deploymentRecommendation": "SAFE | CAUTION | BLOCK",
@@ -109,31 +143,35 @@ Return EXACTLY this schema:
 
     try {
       const response = await axios.post(
-      `${this.omniRouteUrl}/chat/completions`,
-      {
-        model: this.aiModel,
-        messages: [
-          {
-            role: 'user',
-            content: prompt,
+        `${this.omniRouteUrl}/chat/completions`,
+        {
+          model: this.aiModel,
+          messages: [
+            {
+              role: 'user',
+              content: prompt,
+            },
+          ],
+          response_format: {
+            type: 'json_object',
           },
-        ],
-        response_format: {
-          type: 'json_object',
         },
-      },
-    );
+        this.getOmniRouteConfig(),
+      );
 
-    const text = response.data?.choices?.[0]?.message?.content;
+      const text = response.data?.choices?.[0]?.message?.content;
 
-    if (!text) {
-      throw new Error('OmniRoute returned an empty response');
-    }
+      if (!text) {
+        throw new Error('OmniRoute returned an empty response');
+      }
 
-    return JSON.parse(text) as AiReport;
+      return JSON.parse(text) as AiReport;
     } catch (err) {
+      const errorMessage =
+        err instanceof Error ? err.message : String(err);
+
       this.logger.warn(
-        `OmniRoute report generation failed or unavailable: ${err.message}. Using fallback engine.`,
+        `OmniRoute report generation failed or unavailable: ${errorMessage}. Using fallback engine.`,
       );
 
       return this.generateFallbackReport(
@@ -151,26 +189,67 @@ Return EXACTLY this schema:
       return this.chatWithoutContext(message, history);
     }
 
-    const { summary, results, recommendations, projectName } = context;
-    const vulnerablePackages = results.filter((r) => r.vulnerabilities?.length > 0);
+    const {
+      summary,
+      results,
+      recommendations,
+      projectName,
+    } = context;
+
+    const vulnerablePackages = results.filter(
+      (r) => r.vulnerabilities?.length > 0,
+    );
 
     const contextPrompt = `
 You are ChainBrain AI Assistant, an expert application security engineer and dependency vulnerability advisor.
-You are helping a developer inspect and remediate vulnerabilities in their project: "${projectName || 'Scanned Project'}".
+
+You are helping a developer inspect and remediate vulnerabilities in their project:
+"${projectName || 'Scanned Project'}".
 
 ================ PROJECT SCAN CONTEXT ================
 - Security Score: ${summary?.securityScore ?? 'N/A'}/100
-- Risk Level: ${summary?.riskLevel ?? 'N/A'} (Risk Score: ${summary?.riskScore ?? 'N/A'}/100)
-- Total Dependencies: ${summary?.totalPackages ?? results.length}
-- Vulnerable Packages: ${summary?.vulnerablePackages ?? vulnerablePackages.length}
-- Total CVEs/Vulnerabilities: ${summary?.totalVulnerabilities ?? 0}
-- Severity Breakdown: Critical (${summary?.severityCounts?.critical ?? 0}), High (${summary?.severityCounts?.high ?? 0}), Medium (${summary?.severityCounts?.medium ?? 0}), Low (${summary?.severityCounts?.low ?? 0})
+- Risk Level: ${summary?.riskLevel ?? 'N/A'} (Risk Score: ${summary?.riskScore ?? 'N/A'
+      }/100)
+- Total Dependencies: ${summary?.totalPackages ?? results.length
+      }
+- Vulnerable Packages: ${summary?.vulnerablePackages ??
+      vulnerablePackages.length
+      }
+- Total CVEs/Vulnerabilities: ${summary?.totalVulnerabilities ?? 0
+      }
+- Severity Breakdown:
+  Critical (${summary?.severityCounts?.critical ?? 0}),
+  High (${summary?.severityCounts?.high ?? 0}),
+  Medium (${summary?.severityCounts?.medium ?? 0}),
+  Low (${summary?.severityCounts?.low ?? 0})
 
 Top Vulnerable Packages:
-${vulnerablePackages.slice(0, 10).map((p) => `- ${p.package}@${p.version}: ${p.vulnerabilities.length} vulnerabilities (${p.vulnerabilities.map(v => v.id || v.database_specific?.severity).join(', ')})`).join('\n') || 'None (Clean project)'}
+${vulnerablePackages
+        .slice(0, 10)
+        .map(
+          (p) =>
+            `- ${p.package}@${p.version}: ${p.vulnerabilities.length} vulnerabilities (${p.vulnerabilities
+              .map(
+                (v) =>
+                  v.id ||
+                  v.database_specific?.severity ||
+                  v.ecosystem_specific?.severity ||
+                  'UNKNOWN',
+              )
+              .join(', ')})`,
+        )
+        .join('\n') || 'None (Clean project)'
+      }
 
 Recommended Actions:
-${(recommendations || []).slice(0, 5).map((rec) => `- Upgrade ${rec.package} (${rec.version}): ${rec.fix} [Severity: ${rec.severity}] - Reason: ${rec.reason}`).join('\n') || 'No immediate fixes needed.'}
+${(recommendations || [])
+        .slice(0, 5)
+        .map(
+          (rec) =>
+            `- Upgrade ${rec.package} (${rec.version}): ${rec.fix} [Severity: ${rec.severity}] - Reason: ${rec.reason}`,
+        )
+        .join('\n') || 'No immediate fixes needed.'
+      }
 
 ================ INSTRUCTIONS ================
 1. Answer the user's question clearly, concisely, and practically with security engineering expertise.
@@ -181,47 +260,64 @@ ${(recommendations || []).slice(0, 5).map((rec) => `- Upgrade ${rec.package} (${
 
     const conversationPrompt = [
       contextPrompt,
-      ...history.map((h) => `${h.role === 'user' ? 'User' : 'Assistant'}: ${h.content}`),
+      ...history.map(
+        (h) =>
+          `${h.role === 'user' ? 'User' : 'Assistant'}: ${h.content}`,
+      ),
       `User: ${message}`,
       'Assistant:',
     ].join('\n\n');
 
     try {
       const response = await axios.post(
-      `${this.omniRouteUrl}/chat/completions`,
-      {
-        model: this.aiModel,
-        messages: [
-          {
-            role: 'user',
-            content: conversationPrompt,
-          },
-        ],
-      },
-    );
+        `${this.omniRouteUrl}/chat/completions`,
+        {
+          model: this.aiModel,
+          messages: [
+            {
+              role: 'user',
+              content: conversationPrompt,
+            },
+          ],
+        },
+        this.getOmniRouteConfig(),
+      );
 
-    const text = response.data?.choices?.[0]?.message?.content;
+      const text = response.data?.choices?.[0]?.message?.content;
 
-    if (text) {
-      return text.trim();
-    }
+      if (text) {
+        return text.trim();
+      }
 
-    throw new Error('OmniRoute returned an empty response');
+      throw new Error('OmniRoute returned an empty response');
     } catch (err) {
+      const errorMessage =
+        err instanceof Error ? err.message : String(err);
+
       this.logger.warn(
-        `OmniRoute chat failed or unavailable: ${err.message}. Using heuristic fallback.`,
+        `OmniRoute chat failed or unavailable: ${errorMessage}. Using heuristic fallback.`,
       );
     }
 
-    // Heuristic Fallback security engine
     return this.generateHeuristicChatReply(message, context);
   }
 
-  private chatWithoutContext(message: string, history: Array<{ role: string; content: string }>): string {
+  private chatWithoutContext(
+    message: string,
+    history: Array<{ role: string; content: string }>,
+  ): string {
     const lower = message.toLowerCase();
-    if (lower.includes('hello') || lower.includes('hi') || lower.includes('help')) {
-      return `👋 **Hello! I'm ChainBrain AI Security Assistant.**\n\nUpload a project ZIP to let me analyze your dependencies and help you detect CVEs, review risk levels, and guide you through secure upgrades.`;
+
+    if (
+      lower.includes('hello') ||
+      lower.includes('hi') ||
+      lower.includes('help')
+    ) {
+      return `👋 **Hello! I'm ChainBrain AI Security Assistant.**
+
+Upload a project ZIP to let me analyze your dependencies and help you detect CVEs, review risk levels, and guide you through secure upgrades.`;
     }
+
     return `Please scan or upload a project first so I can provide customized security remediation advice and analyze your specific dependency tree.`;
   }
 
@@ -230,48 +326,110 @@ ${(recommendations || []).slice(0, 5).map((rec) => `- Upgrade ${rec.package} (${
     context: ChatRequestDto['context'],
   ): string {
     const lower = message.toLowerCase();
-    const { summary, results = [], recommendations = [], projectName } = context || {};
-    const vulnerable = results.filter((r) => r.vulnerabilities?.length > 0);
+
+    const {
+      summary,
+      results = [],
+      recommendations = [],
+      projectName,
+    } = context || {};
+
+    const vulnerable = results.filter(
+      (r) => r.vulnerabilities?.length > 0,
+    );
 
     // 1. Is it safe to deploy?
-    if (lower.includes('deploy') || lower.includes('safe') || lower.includes('production') || lower.includes('release')) {
-      const isBlock = summary?.riskLevel === 'CRITICAL' || summary?.riskLevel === 'HIGH';
-      const status = isBlock ? '🚨 **Deployment Block Recommended**' : summary?.riskLevel === 'MEDIUM' ? '⚠️ **Caution Recommended**' : '✅ **Safe to Deploy**';
+    if (
+      lower.includes('deploy') ||
+      lower.includes('safe') ||
+      lower.includes('production') ||
+      lower.includes('release')
+    ) {
+      const isBlock =
+        summary?.riskLevel === 'CRITICAL' ||
+        summary?.riskLevel === 'HIGH';
+
+      const status = isBlock
+        ? '🚨 **Deployment Block Recommended**'
+        : summary?.riskLevel === 'MEDIUM'
+          ? '⚠️ **Caution Recommended**'
+          : '✅ **Safe to Deploy**';
 
       return `${status}
 
 **Project Security Posture:**
 - **Security Score:** \`${summary?.securityScore ?? 0}/100\`
 - **Risk Level:** **${summary?.riskLevel ?? 'UNKNOWN'}**
-- **Vulnerabilities:** ${summary?.totalVulnerabilities ?? 0} found across ${vulnerable.length} packages (${summary?.severityCounts?.critical ?? 0} Critical, ${summary?.severityCounts?.high ?? 0} High).
+- **Vulnerabilities:** ${summary?.totalVulnerabilities ?? 0
+        } found across ${vulnerable.length} packages (${summary?.severityCounts?.critical ?? 0
+        } Critical, ${summary?.severityCounts?.high ?? 0} High).
 
-${isBlock ? `### Why deployment should be held:
-You have **${(summary?.severityCounts?.critical ?? 0) + (summary?.severityCounts?.high ?? 0)}** high/critical vulnerabilities. Exploits in these dependencies could compromise runtime integrity or expose user data.
+${isBlock
+          ? `### Why deployment should be held:
+You have **${(summary?.severityCounts?.critical ?? 0) +
+          (summary?.severityCounts?.high ?? 0)
+          }** high/critical vulnerabilities. Exploits in these dependencies could compromise runtime integrity or expose user data.
 
 ### Immediate Action Plan:
 \`\`\`bash
 # Apply prioritized fixes
-${recommendations.slice(0, 3).map(r => `npm install ${r.package}@latest`).join('\n') || 'npm audit fix'}
+${recommendations
+            .slice(0, 3)
+            .map((r) => `npm install ${r.package}@latest`)
+            .join('\n') || 'npm audit fix'
+          }
 \`\`\`
-` : `Your dependency risk profile is within acceptable boundaries. Continue monitoring for newly disclosed CVEs.`}`;
+`
+          : `Your dependency risk profile is within acceptable boundaries. Continue monitoring for newly disclosed CVEs.`
+        }`;
     }
 
     // 2. Explain top critical/high vulnerabilities
-    if (lower.includes('critical') || lower.includes('top') || lower.includes('cve') || lower.includes('explain') || lower.includes('vulnerabilit')) {
+    if (
+      lower.includes('critical') ||
+      lower.includes('top') ||
+      lower.includes('cve') ||
+      lower.includes('explain') ||
+      lower.includes('vulnerabilit')
+    ) {
       if (vulnerable.length === 0) {
-        return `🎉 **Great news!** No known vulnerable packages were detected in **${projectName || 'your project'}**. Your dependency tree scored **${summary?.securityScore ?? 100}/100**.`;
+        return `🎉 **Great news!** No known vulnerable packages were detected in **${projectName || 'your project'
+          }**. Your dependency tree scored **${summary?.securityScore ?? 100
+          }/100**.`;
       }
 
       const topPkgs = vulnerable.slice(0, 4);
-      let reply = `### 🔍 Analysis of Detected Vulnerabilities in **${projectName || 'this project'}**\n\n`;
-      reply += `We detected **${summary?.totalVulnerabilities ?? 0}** total vulnerabilities across **${vulnerable.length}** dependencies.\n\n`;
+
+      let reply = `### 🔍 Analysis of Detected Vulnerabilities in **${projectName || 'this project'
+        }**\n\n`;
+
+      reply += `We detected **${summary?.totalVulnerabilities ?? 0
+        }** total vulnerabilities across **${vulnerable.length
+        }** dependencies.\n\n`;
 
       topPkgs.forEach((pkg, index) => {
-        const severities = pkg.vulnerabilities.map(v => v.database_specific?.severity || 'UNKNOWN').join(', ');
-        const ids = pkg.vulnerabilities.map(v => v.id).filter(Boolean).slice(0, 2).join(', ');
+        const severities = pkg.vulnerabilities
+          .map(
+            (v) =>
+              v.database_specific?.severity ||
+              v.ecosystem_specific?.severity ||
+              'UNKNOWN',
+          )
+          .join(', ');
+
+        const ids = pkg.vulnerabilities
+          .map((v) => v.id)
+          .filter(Boolean)
+          .slice(0, 2)
+          .join(', ');
+
         reply += `**${index + 1}. \`${pkg.package}@${pkg.version}\`**\n`;
         reply += `- **Severity:** \`${severities}\`\n`;
-        if (ids) reply += `- **Advisory IDs:** ${ids}\n`;
+
+        if (ids) {
+          reply += `- **Advisory IDs:** ${ids}\n`;
+        }
+
         reply += `- **Recommendation:** Upgrade to a patched release using \`npm install ${pkg.package}@latest\`\n\n`;
       });
 
@@ -279,18 +437,27 @@ ${recommendations.slice(0, 3).map(r => `npm install ${r.package}@latest`).join('
     }
 
     // 3. How to fix / remediation / upgrade commands
-    if (lower.includes('fix') || lower.includes('upgrade') || lower.includes('patch') || lower.includes('command') || lower.includes('remediat')) {
+    if (
+      lower.includes('fix') ||
+      lower.includes('upgrade') ||
+      lower.includes('patch') ||
+      lower.includes('command') ||
+      lower.includes('remediat')
+    ) {
       if (recommendations.length === 0) {
         return `✅ **All dependencies are currently up-to-date and have no known security advisories!**`;
       }
 
       return `### 🛠️ Recommended Remediation Steps
 
-Here are the prioritized commands to resolve the highest risk vulnerabilities in **${projectName || 'your project'}**:
+Here are the prioritized commands to resolve the highest risk vulnerabilities in **${projectName || 'your project'
+        }**:
 
 \`\`\`bash
 # 1. Update critical and high risk packages
-${recommendations.map(r => `npm install ${r.package}@latest  # ${r.fix}`).join('\n')}
+${recommendations
+          .map((r) => `npm install ${r.package}@latest  # ${r.fix}`)
+          .join('\n')}
 
 # 2. Run automated audit remediation
 npm audit fix
@@ -300,30 +467,51 @@ npm audit fix
     }
 
     // 4. Specific package query
-    const matchedPkg = results.find(r => lower.includes(r.package.toLowerCase()));
+    const matchedPkg = results.find((r) =>
+      lower.includes(r.package.toLowerCase()),
+    );
+
     if (matchedPkg) {
-      if (!matchedPkg.vulnerabilities || matchedPkg.vulnerabilities.length === 0) {
-        return `📦 **Package: \`${matchedPkg.package}@${matchedPkg.version}\`**\n\nStatus: ✅ **Secure** - No known vulnerabilities were reported for this package version.`;
+      if (
+        !matchedPkg.vulnerabilities ||
+        matchedPkg.vulnerabilities.length === 0
+      ) {
+        return `📦 **Package: \`${matchedPkg.package}@${matchedPkg.version}\`**
+
+Status: ✅ **Secure** - No known vulnerabilities were reported for this package version.`;
       }
 
       return `📦 **Security Report for \`${matchedPkg.package}@${matchedPkg.version}\`**
 
 - **Vulnerabilities Count:** ${matchedPkg.vulnerabilities.length}
-- **Advisories:** ${matchedPkg.vulnerabilities.map(v => `\`${v.id || 'Advisory'}\` (${v.database_specific?.severity || 'Severity N/A'})`).join(', ')}
+- **Advisories:** ${matchedPkg.vulnerabilities
+          .map(
+            (v) =>
+              `\`${v.id || 'Advisory'}\` (${v.database_specific?.severity ||
+              v.ecosystem_specific?.severity ||
+              'Severity N/A'
+              })`,
+          )
+          .join(', ')}
 
 **Recommended Action:**
 \`\`\`bash
 npm install ${matchedPkg.package}@latest
 \`\`\`
+
 Verify breaking changes in the package release notes before deploying.`;
     }
 
     // Generic helpful overview
-    return `### 🧠 Security Summary for **${projectName || 'Current Project'}**
+    return `### 🧠 Security Summary for **${projectName || 'Current Project'
+      }**
 
-- **Overall Health Score:** **${summary?.securityScore ?? 'N/A'}/100** (Risk Level: \`${summary?.riskLevel ?? 'N/A'}\`)
-- **Total Packages:** ${summary?.totalPackages ?? results.length}
-- **Vulnerable Packages:** ${summary?.vulnerablePackages ?? vulnerable.length}
+- **Overall Health Score:** **${summary?.securityScore ?? 'N/A'
+      }/100** (Risk Level: \`${summary?.riskLevel ?? 'N/A'}\`)
+- **Total Packages:** ${summary?.totalPackages ?? results.length
+      }
+- **Vulnerable Packages:** ${summary?.vulnerablePackages ?? vulnerable.length
+      }
 
 **Suggested Questions you can ask:**
 - *"Is this project safe to deploy to production?"*
@@ -337,12 +525,24 @@ Verify breaking changes in the package release notes before deploying.`;
     results: ScanResult[],
     recommendations: Recommendation[],
   ): AiReport {
-    const vulnerable = results.filter((pkg) => pkg.vulnerabilities && pkg.vulnerabilities.length > 0);
-    const criticalCount = summary.severityCounts?.critical ?? 0;
-    const highCount = summary.severityCounts?.high ?? 0;
+    const vulnerable = results.filter(
+      (pkg) => pkg.vulnerabilities && pkg.vulnerabilities.length > 0,
+    );
+
+    const criticalCount =
+      summary.severityCounts?.critical ?? 0;
+
+    const highCount =
+      summary.severityCounts?.high ?? 0;
 
     let deployRec: 'SAFE' | 'CAUTION' | 'BLOCK' = 'SAFE';
-    if (criticalCount > 0 || highCount > 0 || summary.riskLevel === 'CRITICAL' || summary.riskLevel === 'HIGH') {
+
+    if (
+      criticalCount > 0 ||
+      highCount > 0 ||
+      summary.riskLevel === 'CRITICAL' ||
+      summary.riskLevel === 'HIGH'
+    ) {
       deployRec = 'BLOCK';
     } else if (summary.riskLevel === 'MEDIUM') {
       deployRec = 'CAUTION';
@@ -350,27 +550,50 @@ Verify breaking changes in the package release notes before deploying.`;
 
     return {
       overallAssessment: `The scanned project has a Security Score of ${summary.securityScore}/100 with an overall ${summary.riskLevel} risk rating across ${summary.totalPackages} total dependencies.`,
+
       deploymentRecommendation: deployRec,
+
       keyFindings: [
         `Identified ${summary.vulnerablePackages} vulnerable package(s) containing ${summary.totalVulnerabilities} total known vulnerabilities.`,
-        `Severity distribution: ${criticalCount} Critical, ${highCount} High, ${summary.severityCounts?.medium ?? 0} Medium, ${summary.severityCounts?.low ?? 0} Low advisories.`,
+
+        `Severity distribution: ${criticalCount} Critical, ${highCount} High, ${summary.severityCounts?.medium ?? 0
+        } Medium, ${summary.severityCounts?.low ?? 0
+        } Low advisories.`,
+
         vulnerable.length > 0
-          ? `Highest risk exposure stems from ${vulnerable.slice(0, 2).map(v => v.package).join(' and ')}.`
+          ? `Highest risk exposure stems from ${vulnerable
+            .slice(0, 2)
+            .map((v) => v.package)
+            .join(' and ')}.`
           : `All scanned packages currently meet baseline vulnerability hygiene standards.`,
       ],
-      recommendations: recommendations.length > 0
-        ? recommendations.slice(0, 3).map(r => `Upgrade ${r.package}@${r.version} to patched version (${r.fix})`)
-        : [
-          'Maintain continuous dependency scanning during CI/CD builds.',
-          'Keep lockfiles pinned and automated dependency updates enabled.',
-          'Regularly audit newly added third-party packages.',
-        ],
-      priorityPackages: recommendations.slice(0, 5).map(r => ({
-        package: r.package,
-        severity: r.severity,
-        reason: r.reason || `Vulnerability detected in installed version ${r.version}.`,
-      })),
-      conclusion: 'Review critical CVEs and upgrade identified vulnerable dependencies before promoting to production environments.',
+
+      recommendations:
+        recommendations.length > 0
+          ? recommendations
+            .slice(0, 3)
+            .map(
+              (r) =>
+                `Upgrade ${r.package}@${r.version} to patched version (${r.fix})`,
+            )
+          : [
+            'Maintain continuous dependency scanning during CI/CD builds.',
+            'Keep lockfiles pinned and automated dependency updates enabled.',
+            'Regularly audit newly added third-party packages.',
+          ],
+
+      priorityPackages: recommendations
+        .slice(0, 5)
+        .map((r) => ({
+          package: r.package,
+          severity: r.severity,
+          reason:
+            r.reason ||
+            `Vulnerability detected in installed version ${r.version}.`,
+        })),
+
+      conclusion:
+        'Review critical CVEs and upgrade identified vulnerable dependencies before promoting to production environments.',
     };
   }
 }
